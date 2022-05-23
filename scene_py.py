@@ -46,6 +46,8 @@ class Scene:
         if "constitutive_model" in self.material:
             if self.material["constitutive_model"] == "VK":
                 return _VK(F_mat)
+            elif self.material["constitutive_model"] == "Linear":
+                return _Linear(F_mat)
             else:
                 raise NotImplementedError("No method named:" + self.material["constitutive_model"])
         return _Linear(F_mat)
@@ -96,6 +98,19 @@ class Scene:
         self.W = np.abs(np.linalg.det(Dm) / volumn_scalar)
         self.Bm = np.linalg.inv(Dm)
 
+    def _compute_nodal_force_from_f_and_x(self, f, x):
+        ret = f.copy()
+        d = self.dim
+        triangles = x[self.M]
+        Ds = npo.T(triangles[:, :d, :] - triangles[:, d:, :])
+        F = Ds @ self.Bm
+        P = self._constitutive_model(F)
+        H = - npo.scalarMult(self.W, P @ npo.T(self.Bm))
+        minusHsum = - np.sum(H, axis=-1, keepdims=True)
+        Hijk = np.c_[H, minusHsum]
+        np.add.at(ret, self.M, npo.T(Hijk))
+        return ret
+
     def _compute_nodal_force(self, f_ext):
         """
         Python Loop (slow)
@@ -110,18 +125,7 @@ class Scene:
         assert self.W is not None
         assert self.Bm is not None
         assert f_ext.shape == self.XY.shape
-        d = self.dim
-        f_i = f_ext.copy()
-        triangles = self.x_i[-1][self.M]
-        Ds = npo.T(triangles[:, :d, :] - triangles[:, d:, :])
-        F = Ds @ self.Bm
-        P = self._constitutive_model(F)
-        H = - npo.scalarMult(self.W, P @ npo.T(self.Bm))
-        minusHsum = - np.sum(H, axis=-1, keepdims=True)
-        Hijk = np.c_[H, minusHsum]
-        np.add.at(f_i, self.M, npo.T(Hijk))
-        # print(f_i)
-        # input("f_i fin.")
+        f_i = self._compute_nodal_force_from_f_and_x(f_ext, self.x_i[-1])
         self.a_i.append(f_i / self.material["mass"])
 
     def _forward_euler(self, time_step):
@@ -129,39 +133,64 @@ class Scene:
         self.v_i.append(self.v_i[-1] + time_step * self.a_i[-1])
         self.x_i.append(self.x_i[-1] + time_step * self.v_i[-2])
 
-    def _NR(self, time_step, para_config):
+    def _NRsolver(self, time_step, para_config, f_ext):
         assert len(self.a_i) == len(self.x_i) == len(self.v_i)
-        if "max iter" in para_config:
-            max_iter = para_config["max iter"]
-        else:
-            max_iter = 10
-        if "eps" in para_config:
-            eps = para_config["eps"]
-        else:
-            eps = 1e-10
-        v0 = self.v_i[-1]
-        t2_m = time_step ** 2 / self.material["mass"]
-        r0 = time_step * self.a_i[-1] + self._compute_nodal_force_differentials(t2_m * v0)
-        d = r0.copy()
+        newton_config = para_config["Newton"]
+        cg_config = para_config["Conjugate Gradient"]
 
-        # Conjugate Gradient
-        for i in range(max_iter):
-            Ad = d - self._compute_nodal_force_differentials(t2_m * d)
-            r0_2 = npo.dot(r0, r0)
-            # print(r0_2)
-            if r0_2 < eps:
-                self.v_i.append(v0)
-                self.x_i.append(self.x_i[-1] + time_step * v0)
+        v0 = self.v_i[-1]
+        M = self.material["mass"]
+        t2_m = time_step ** 2 / M
+        def conjugate_gradient(r0, d, v0, max_iter, eps):
+            for i in range(max_iter):
+                Ad = d - self._compute_nodal_force_differentials(t2_m * d)
+                r0_2 = npo.dot(r0, r0)
+                if r0_2 < eps:
+                    return v0, i + 1
+                alpha = r0_2 / npo.dot(d, Ad)
+                v0 = v0 + alpha * d
+                r0 = r0 - alpha * Ad
+                d = r0 + npo.dot(r0, r0) / r0_2 * d
+            else:
+                return v0, 0
+
+        r0 = time_step * self.a_i[-1] + self._compute_nodal_force_differentials(t2_m * v0)
+        v1, ret = conjugate_gradient(r0, r0, v0, cg_config["max iter"], cg_config["eps"])
+        if not ret:
+            print("Max iter reached in CG at: " + str(len(self.x_i) - 1))
+        self.v_i.append(v1)
+        self.x_i.append(self.x_i[-1] + time_step * v1)
+        if newton_config["max iter"] > 1:
+            # Here x, v already computed and stored as self.x_i[-1], v_i[-1]
+            # only to refine them
+            # i.e. self.x_i[-1] = x_{t+1}
+            for i in range(newton_config["max iter"] - 1):
+                # Note: you cannot reuse f_now since generally
+                # f^{ext}_{t+1} != f^{ext}_{t}
+                print("Init res:", time_step * np.linalg.norm(self.a_i) ** 2)
+                # print(f_ext[:5, :])
+                f_now = self._compute_nodal_force_from_f_and_x(f_ext, self.x_i[-1])
+                true_residual = self.v_i[-1] - self.v_i[-2] - (time_step / M) * f_now
+                true_norm = np.linalg.norm(true_residual) ** 2
+                print("start N iter with res:", true_norm)
+                if true_norm < newton_config["eps"]:
+                    return
+                v0 = self.v_i[-1]
+                r0 = - true_residual
+                v1, ret = conjugate_gradient(r0, r0, v0, cg_config["max iter"], cg_config["eps"])
+
+                if not ret:
+                    print("Max iter reached in CG at: " + str(len(self.x_i) - 1))
+                if ret == 1 or ret == 2:
+                    print("No progress could be made at " + str(len(self.x_i) - 1))
+                    return
+                self.v_i[-1] = v1
+                self.x_i[-1] = self.x_i[-2] + time_step * v1
+                print("x:", self.x_i[-1][:5,:], "v:", self.v_i[-1][:5,:])
+                input()
+            else:
+                print("Max iter reached in NR at: " + str(len(self.x_i) - 1))
                 return
-            alpha = r0_2 / npo.dot(d, Ad)
-            v0 = v0 + alpha * d
-            r0 = r0 - alpha * Ad
-            d = r0 + npo.dot(r0, r0) / r0_2 * d
-        else:
-            print("Max Iter Reached at Step:" + str(len(self.x_i)))
-            self.v_i.append(v0)
-            self.x_i.append(self.x_i[-1] + time_step * v0)
-            return
 
     def _compute_nodal_force_differentials(self, delta_x):
         """
@@ -177,6 +206,7 @@ class Scene:
         delta_triangles = delta_x[self.M]
         Ds = npo.T(triangles[:, :d, :] - triangles[:, d:, :])
         delta_Ds = npo.T(delta_triangles[:, :d, :] - delta_triangles[:, d:, :])
+
         F = Ds @ self.Bm
         delta_F = delta_Ds @ self.Bm
         delta_P = self._constitutive_model_differentials(F, delta_F)
@@ -201,7 +231,7 @@ class Scene:
         elif method == "ImplicitEuler":
             for t in tqdm(range(frame_len)):
                 self._compute_nodal_force(external_force[t])
-                self._NR(time_step, method_config)
+                self._NRsolver(time_step, method_config, external_force[t])
         else:
             raise NotImplementedError("Not supported yet: " + method)
 

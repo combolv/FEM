@@ -18,5 +18,9 @@
 %include <std_array.i>
 %include <std_vector.i>
 %include "./include/scene.h"
+%include "./include/solver.h"
 
-%template(Scene3d) Scene<3>;
+namespace std {
+    %template(StdDoubleVector) vector<double>;
+    %template(StdIntVector) vector<int>;
+}
