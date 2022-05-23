@@ -43,7 +43,7 @@ private:
     double mu_;
     double lambda_;
     int constitutive_method_type_;
-    enum ConstitutiveModelType { Linear, StVK };
+    enum ConstitutiveModelType { Linear, StVK }; //, Neohookean };
     std::vector<double> XY_grid;
     std::vector<int> tetra_idx;
     std::vector<Eigen::Matrix3d> Bm;

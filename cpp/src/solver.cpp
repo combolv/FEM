@@ -124,21 +124,22 @@ int ImplicitSolver::_conjugate_gradient(Eigen::VectorXd& v, Eigen::VectorXd& r){
      *       -1: exhaust max steps
      *       -2: Nan or Inf encountered
      */
-    Eigen::VectorXd d(r);
-    double r0_2;
+    Eigen::VectorXd p(r);
+    double r1_2, r0_2 = r.squaredNorm();
     for(int i = 0; i < max_cg_iter_; i++){
-        _compute_nodal_force_diff(t2_m * d);
-        r0_2 = r.squaredNorm();
         if (r0_2 < cg_eps_) return i;
         if (Diverge(r0_2)){
             std::cout << "Divergence in CG." << std::endl;
             return -2;
         }
-        Eigen::VectorXd Ad = d - dforce1;
-        double alpha = r0_2 / d.dot(Ad);
-        v += alpha * d;
-        r -= alpha * Ad;
-        d = r + (r.squaredNorm() / r0_2) * d;
+        _compute_nodal_force_diff(t2_m * p);
+        Eigen::VectorXd Ap = p - dforce1;
+        double alpha = r0_2 / p.dot(Ap);
+        v += alpha * p;
+        r -= alpha * Ap;
+        r1_2 = r.squaredNorm();
+        p = r + (r1_2 / r0_2) * p;
+        r0_2 = r1_2;
     }
     // std::cout << "Max CG step " << max_cg_iter_ << " reached with residual error: " << r0_2 << std::endl;
     return -1;

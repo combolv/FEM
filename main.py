@@ -11,8 +11,8 @@ if __name__ == "__main__":
             "x0": -5,
             "y0": -5,
             "z0": -10,
-            "length": 20,
-            "width": 20,
+            "length": 10,
+            "width": 10,
             "height": 40,
             "cell side length": 0.005
         },
@@ -41,7 +41,7 @@ if __name__ == "__main__":
                     "eps": 1,
                 }
             },
-            "time_step": 1e-2
+            "time_step": 1e-3
         },
         "debug recording": {
             "mode": "displacement only",
@@ -49,6 +49,7 @@ if __name__ == "__main__":
         }
     }
     xyz, idx, test_force, boundary_ids = generate_tetra_cuboid_and_force(config["shape"], config["force"])
+    scene = None
     scene = SceneC3d(xyz, idx, config["material"], dim=3)
     
     scene.solve(test_force, time_step=config["integration"]["time_step"], method=config["integration"]["method"],
@@ -57,7 +58,7 @@ if __name__ == "__main__":
     np.save("cpp_out_xy.npy", np.array(scene.x_i))
 
     # from visualization import generate_video3d
-    # generate_video3d(scene, 0, 1000, 1, boundary_ids, out=".\\output\\cpp_out_shear\\", given_xi="cpp_out.npy")
+    # generate_video3d(scene, 0, 300, 1, boundary_ids, out=".\\output\\cpp_out_shear\\", given_xi="cpp_out_xy.npy")
 
 
 '''
